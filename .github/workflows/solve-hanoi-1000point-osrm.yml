@@ -45,6 +45,9 @@ jobs:
       INSTANCE_DIR: ${{ matrix.instance_dir }}
       INSTANCE_BASE: ${{ matrix.instance_base }}
       RESULT_DIR: ${{ matrix.result_dir }}
+      TIME_LIMIT_SECONDS: ${{ github.event.inputs.time_limit_seconds || '18000' }}
+      SEGMENTS: ${{ github.event.inputs.segments || '96' }}
+      ITERATIONS_PER_SEGMENT: ${{ github.event.inputs.iterations_per_segment || '3000' }}
 
     steps:
       - name: Checkout repository
@@ -88,13 +91,13 @@ jobs:
             "$GITHUB_WORKSPACE/$instance_file"
             "--truck-vmax-file=$GITHUB_WORKSPACE/$vmax_file"
             "--truck-theta-file=$GITHUB_WORKSPACE/$theta_file"
-            "--segments=${{ github.event.inputs.segments }}"
-            "--iters=${{ github.event.inputs.iterations_per_segment }}"
-            "--time-limit=${{ github.event.inputs.time_limit_seconds }}"
+            "--segments=$SEGMENTS"
+            "--iters=$ITERATIONS_PER_SEGMENT"
+            "--time-limit=$TIME_LIMIT_SECONDS"
             "--attempts=1"
           )
 
-          external_timeout_seconds=$(( ${{ github.event.inputs.time_limit_seconds }} + 120 ))
+          external_timeout_seconds=$(( TIME_LIMIT_SECONDS + 120 ))
 
           pushd "$RESULT_DIR" >/dev/null
           timeout --signal=TERM --kill-after=30s "${external_timeout_seconds}s" \
