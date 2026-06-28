@@ -1,0 +1,118 @@
+name: Solve Hanoi 1000-point OSRM v1/v2
+
+on:
+  workflow_dispatch:
+    inputs:
+      time_limit_seconds:
+        description: "Maximum solver runtime in seconds"
+        required: false
+        default: "18000"
+      segments:
+        description: "Recommended segment count for 1000 customers"
+        required: false
+        default: "96"
+      iterations_per_segment:
+        description: "Recommended iterations per segment for 1000 customers"
+        required: false
+        default: "3000"
+
+jobs:
+  solve:
+    name: Solve ${{ matrix.instance_base }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 310
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - instance_dir: instance_hanoi/1000point_v1_osrm
+            instance_base: 1000point_v1
+            result_dir: results/hanoi_1000point_v1_osrm
+          - instance_dir: instance_hanoi/1000point_v2_osrm
+            instance_base: 1000point_v2
+            result_dir: results/hanoi_1000point_v2_osrm
+
+    env:
+      INSTANCE_DIR: ${{ matrix.instance_dir }}
+      INSTANCE_BASE: ${{ matrix.instance_base }}
+      RESULT_DIR: ${{ matrix.result_dir }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install plot dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install matplotlib numpy
+
+      - name: Build time-dependent tabu solver
+        run: |
+          g++ -std=c++17 -O3 -DNDEBUG tabubu_TimeDependent.cpp -o tabubu_TimeDependent
+
+      - name: Solve Hanoi OSRM instance
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$RESULT_DIR"
+
+          instance_file="$INSTANCE_DIR/$INSTANCE_BASE.txt"
+          vmax_file="$INSTANCE_DIR/$INSTANCE_BASE.vmax_ij.txt"
+          theta_file="$INSTANCE_DIR/$INSTANCE_BASE.theta_ijl.txt"
+          theta_gz_file="$theta_file.gz"
+
+          if [[ ! -f "$theta_file" && -f "$theta_gz_file" ]]; then
+            gzip -cd "$theta_gz_file" > "$theta_file"
+          fi
+
+          for required_file in "$instance_file" "$vmax_file" "$theta_file"; do
+            if [[ ! -f "$required_file" ]]; then
+              echo "Missing required file: $required_file" >&2
+              exit 2
+            fi
+          done
+
+          solver_command=(
+            "$GITHUB_WORKSPACE/tabubu_TimeDependent"
+            "$GITHUB_WORKSPACE/$instance_file"
+            "--truck-vmax-file=$GITHUB_WORKSPACE/$vmax_file"
+            "--truck-theta-file=$GITHUB_WORKSPACE/$theta_file"
+            "--segments=${{ github.event.inputs.segments }}"
+            "--iters=${{ github.event.inputs.iterations_per_segment }}"
+            "--time-limit=${{ github.event.inputs.time_limit_seconds }}"
+            "--attempts=1"
+          )
+
+          external_timeout_seconds=$(( ${{ github.event.inputs.time_limit_seconds }} + 120 ))
+
+          pushd "$RESULT_DIR" >/dev/null
+          timeout --signal=TERM --kill-after=30s "${external_timeout_seconds}s" \
+            "${solver_command[@]}" 2>&1 | tee solver.log
+          popd >/dev/null
+
+      - name: Plot objective convergence
+        run: |
+          set -euo pipefail
+
+          iter_file="$RESULT_DIR/output_mode_0.txt"
+          if [[ ! -s "$iter_file" ]]; then
+            echo "Missing iteration CSV: $iter_file" >&2
+            exit 2
+          fi
+
+          python3 plot_iteration.py \
+            --input "$iter_file" \
+            --input-mode0 "$iter_file" \
+            --save "$RESULT_DIR/convergence.png"
+
+      - name: Upload solver results
+        uses: actions/upload-artifact@v4
+        with:
+          name: hanoi-${{ matrix.instance_base }}-osrm-results
+          path: |
+            ${{ matrix.result_dir }}/output_solution_best.txt
+            ${{ matrix.result_dir }}/output_mode_0.txt
+            ${{ matrix.result_dir }}/convergence.png
+            ${{ matrix.result_dir }}/solver.log
