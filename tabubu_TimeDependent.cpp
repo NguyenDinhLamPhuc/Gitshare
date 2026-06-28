@@ -109,6 +109,7 @@ static int CFG_MAX_SEGMENT = MAX_SEGMENT;
 static int CFG_MAX_NO_IMPROVE = MAX_NO_IMPROVE;
 static int CFG_MAX_ITER_PER_SEGMENT = MAX_ITER_PER_SEGMENT;
 static double CFG_TIME_LIMIT_SEC = 0.0; // 0 = unlimited
+static uint64_t CFG_BASE_SEED = 42;
 static string CFG_TRUCK_VMAX_FILE; // optional file: i j vmax_ij
 static string CFG_TRUCK_THETA_FILE; // optional file: i j l theta_ijl, l is 0-based segment index
 
@@ -6260,7 +6261,7 @@ int main(int argc, char* argv[]) {
     if (argc < 2) {
         cerr << "Usage: " << argv[0]
              << " input_file [--print-distance-matrix]"
-             << " [--attempts=N] [--segments=N] [--iters=N] [--no-improve=N] [--time-limit=SEC] [--auto-tune]"
+             << " [--attempts=N] [--segments=N] [--iters=N] [--no-improve=N] [--time-limit=SEC] [--seed=N] [--auto-tune]"
              << " [--knn-k=K] [--knn-window=W]"
              << " [--truck-vmax-file=PATH] [--truck-theta-file=PATH]"
              << "\n";
@@ -6279,6 +6280,7 @@ int main(int argc, char* argv[]) {
         if (parse_kv_flag(arg, "--iters", v)) { CFG_MAX_ITER_PER_SEGMENT = max(1, stoi(v)); continue; }
         if (parse_kv_flag(arg, "--no-improve", v)) { CFG_MAX_NO_IMPROVE = max(1, stoi(v)); continue; }
         if (parse_kv_flag(arg, "--time-limit", v)) { CFG_TIME_LIMIT_SEC = max(0.0, stod(v)); continue; }
+        if (parse_kv_flag(arg, "--seed", v)) { CFG_BASE_SEED = stoull(v); continue; }
         if (parse_kv_flag(arg, "--knn-k", v)) { CFG_KNN_K = max(0, stoi(v)); continue; }
         if (parse_kv_flag(arg, "--knn-window", v)) { CFG_KNN_WINDOW = max(0, stoi(v)); continue; }
         if (parse_kv_flag(arg, "--truck-vmax-file", v)) { CFG_TRUCK_VMAX_FILE = v; continue; }
@@ -6355,9 +6357,8 @@ int main(int argc, char* argv[]) {
     all_results.reserve(CFG_NUM_INITIAL);
 
     auto start_time = std::chrono::high_resolution_clock::now();
-    int ablation_seed = 42;
     for (int attempt = 0; attempt < CFG_NUM_INITIAL; ++attempt) {
-        Solution initial_solution = generate_initial_solution(ablation_seed + attempt);
+        Solution initial_solution = generate_initial_solution(CFG_BASE_SEED + attempt);
         vd iter_current, iter_best;
         vector<bool> current_feasibility;
         Solution improved_sol = tabu_search(initial_solution, CFG_NUM_INITIAL, iter_current, iter_best, current_feasibility);

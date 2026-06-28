@@ -27,7 +27,7 @@ on:
 
 jobs:
   solve:
-    name: Solve ${{ matrix.instance_base }}
+    name: Solve ${{ matrix.instance_base }} run ${{ matrix.repetition }}
     runs-on: ubuntu-latest
     timeout-minutes: 310
     strategy:
@@ -36,15 +36,41 @@ jobs:
         include:
           - instance_dir: instance_hanoi/1000point_v1_osrm
             instance_base: 1000point_v1
-            result_dir: results/hanoi_1000point_v1_osrm
+            repetition: 1
+            seed: 42
+            result_dir: results/hanoi_1000point_v1_osrm_run1
+          - instance_dir: instance_hanoi/1000point_v1_osrm
+            instance_base: 1000point_v1
+            repetition: 2
+            seed: 43
+            result_dir: results/hanoi_1000point_v1_osrm_run2
+          - instance_dir: instance_hanoi/1000point_v1_osrm
+            instance_base: 1000point_v1
+            repetition: 3
+            seed: 44
+            result_dir: results/hanoi_1000point_v1_osrm_run3
           - instance_dir: instance_hanoi/1000point_v2_osrm
             instance_base: 1000point_v2
-            result_dir: results/hanoi_1000point_v2_osrm
+            repetition: 1
+            seed: 42
+            result_dir: results/hanoi_1000point_v2_osrm_run1
+          - instance_dir: instance_hanoi/1000point_v2_osrm
+            instance_base: 1000point_v2
+            repetition: 2
+            seed: 43
+            result_dir: results/hanoi_1000point_v2_osrm_run2
+          - instance_dir: instance_hanoi/1000point_v2_osrm
+            instance_base: 1000point_v2
+            repetition: 3
+            seed: 44
+            result_dir: results/hanoi_1000point_v2_osrm_run3
 
     env:
       INSTANCE_DIR: ${{ matrix.instance_dir }}
       INSTANCE_BASE: ${{ matrix.instance_base }}
+      REPETITION: ${{ matrix.repetition }}
       RESULT_DIR: ${{ matrix.result_dir }}
+      SEED: ${{ matrix.seed }}
       TIME_LIMIT_SECONDS: ${{ github.event.inputs.time_limit_seconds || '18000' }}
       SEGMENTS: ${{ github.event.inputs.segments || '96' }}
       ITERATIONS_PER_SEGMENT: ${{ github.event.inputs.iterations_per_segment || '3000' }}
@@ -94,12 +120,22 @@ jobs:
             "--segments=$SEGMENTS"
             "--iters=$ITERATIONS_PER_SEGMENT"
             "--time-limit=$TIME_LIMIT_SECONDS"
+            "--seed=$SEED"
             "--attempts=1"
           )
 
           external_timeout_seconds=$(( TIME_LIMIT_SECONDS + 120 ))
 
           pushd "$RESULT_DIR" >/dev/null
+          {
+            echo "Instance: $INSTANCE_BASE"
+            echo "Repetition: $REPETITION"
+            echo "Seed: $SEED"
+            echo "Segments: $SEGMENTS"
+            echo "Iterations per segment: $ITERATIONS_PER_SEGMENT"
+            echo "Time limit seconds: $TIME_LIMIT_SECONDS"
+          } > run_metadata.txt
+
           timeout --signal=TERM --kill-after=30s "${external_timeout_seconds}s" \
             "${solver_command[@]}" 2>&1 | tee solver.log
           popd >/dev/null
@@ -122,9 +158,10 @@ jobs:
       - name: Upload solver results
         uses: actions/upload-artifact@v4
         with:
-          name: hanoi-${{ matrix.instance_base }}-osrm-results
+          name: hanoi-${{ matrix.instance_base }}-osrm-run-${{ matrix.repetition }}-results
           path: |
             ${{ matrix.result_dir }}/output_solution_best.txt
             ${{ matrix.result_dir }}/output_mode_0.txt
             ${{ matrix.result_dir }}/convergence.png
             ${{ matrix.result_dir }}/solver.log
+            ${{ matrix.result_dir }}/run_metadata.txt
