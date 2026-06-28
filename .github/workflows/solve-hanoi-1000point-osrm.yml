@@ -1,6 +1,15 @@
 name: Solve Hanoi 1000-point OSRM v1/v2
 
 on:
+  push:
+    branches:
+      - Tu_paper
+    paths:
+      - ".github/workflows/solve-hanoi-1000point-osrm.yml"
+      - "tabubu_TimeDependent.cpp"
+      - "plot_iteration.py"
+      - "instance_hanoi/1000point_v1_osrm/**"
+      - "instance_hanoi/1000point_v2_osrm/**"
   workflow_dispatch:
     inputs:
       time_limit_seconds:
