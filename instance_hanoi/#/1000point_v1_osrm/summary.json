@@ -1,0 +1,36 @@
+{
+  "dataset": "1000pint_v1",
+  "point_count_including_depot": 1001,
+  "pair_count_directed": 1001000,
+  "min_distance_m": 505.0,
+  "avg_distance_m": 24798.047,
+  "max_distance_m": 57315.4,
+  "source_master_dir": "/Users/huetran/Desktop/crawdata/output/master_v1_v2_unique_osrm",
+  "filtered_30km_500m": {
+    "created_at": "2026-06-28T12:28:01",
+    "rule": "Keep only customers with OSRM depot->point < 30000 m and point->depot < 30000 m; final selected points satisfy directed OSRM pair distance >= 500 m.",
+    "source_master_dir": "/Users/huetran/Desktop/crawdata/output/master_v1_v2_unique_osrm",
+    "max_depot_distance_m_exclusive": 30000.0,
+    "min_pairwise_distance_m": 500.0,
+    "original_customers": 1000,
+    "original_kept": 895,
+    "original_removed_total": 105,
+    "original_removed_far_or_depot_direction": 85,
+    "added_from_master": 105,
+    "candidate_pool_depot_both_directions_lt_30km": 1035
+  },
+  "speed_clip_15_50_kmh": {
+    "created_at": "2026-06-28T12:50:38",
+    "rule": "For off-diagonal OD pairs, speed_kmh is clipped to [15, 50]; duration_s is recomputed as distance_m / speed_mps. Diagonal remains 0.",
+    "min_speed_kmh": 15.0,
+    "max_speed_kmh": 50.0,
+    "clipped_below_min_pairs": 27139,
+    "clipped_above_max_pairs": 737969,
+    "off_diagonal_pairs": 1001000,
+    "result_min_speed_kmh": 15.0,
+    "result_max_speed_kmh": 50.0,
+    "result_mean_speed_kmh": 47.277112,
+    "result_max_duration_s": 9871.9,
+    "result_max_duration_min": 164.532
+  }
+}

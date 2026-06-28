@@ -13,9 +13,9 @@ on:
   workflow_dispatch:
     inputs:
       time_limit_seconds:
-        description: "Maximum solver runtime in seconds"
+        description: "Soft solver runtime limit in seconds"
         required: false
-        default: "18000"
+        default: "16200"
       segments:
         description: "Recommended segment count for 1000 customers"
         required: false
@@ -29,7 +29,7 @@ jobs:
   solve:
     name: Solve ${{ matrix.instance_base }} run ${{ matrix.repetition }}
     runs-on: ubuntu-latest
-    timeout-minutes: 310
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -71,7 +71,7 @@ jobs:
       REPETITION: ${{ matrix.repetition }}
       RESULT_DIR: ${{ matrix.result_dir }}
       SEED: ${{ matrix.seed }}
-      TIME_LIMIT_SECONDS: ${{ github.event.inputs.time_limit_seconds || '18000' }}
+      TIME_LIMIT_SECONDS: ${{ github.event.inputs.time_limit_seconds || '16200' }}
       SEGMENTS: ${{ github.event.inputs.segments || '96' }}
       ITERATIONS_PER_SEGMENT: ${{ github.event.inputs.iterations_per_segment || '3000' }}
 
@@ -124,8 +124,6 @@ jobs:
             "--attempts=1"
           )
 
-          external_timeout_seconds=$(( TIME_LIMIT_SECONDS + 120 ))
-
           pushd "$RESULT_DIR" >/dev/null
           {
             echo "Instance: $INSTANCE_BASE"
@@ -134,10 +132,10 @@ jobs:
             echo "Segments: $SEGMENTS"
             echo "Iterations per segment: $ITERATIONS_PER_SEGMENT"
             echo "Time limit seconds: $TIME_LIMIT_SECONDS"
+            echo "GitHub job timeout minutes: 360"
           } > run_metadata.txt
 
-          timeout --signal=TERM --kill-after=30s "${external_timeout_seconds}s" \
-            "${solver_command[@]}" 2>&1 | tee solver.log
+          "${solver_command[@]}" 2>&1 | tee solver.log
           popd >/dev/null
 
       - name: Plot objective convergence
@@ -156,6 +154,7 @@ jobs:
             --save "$RESULT_DIR/convergence.png"
 
       - name: Upload solver results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: hanoi-${{ matrix.instance_base }}-osrm-run-${{ matrix.repetition }}-results

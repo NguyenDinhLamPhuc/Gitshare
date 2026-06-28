@@ -1,0 +1,4 @@
+iter,current_cost,best_cost,feasible
+1,1661.628956,1661.628956,true
+2,1062.879475,1062.879475,true
+3,1062.879475,1062.879475,true

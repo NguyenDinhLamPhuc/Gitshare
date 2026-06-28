@@ -1,0 +1,35 @@
+{
+  "version": "v2",
+  "description": "120 điểm trung tâm từ selected_500m + 110 điểm cho mỗi zone outer từ dataset_1000_customers_road_fixed",
+  "total_customers": 1000,
+  "center_count": 120,
+  "outer_per_zone": 110,
+  "outer_zones": [
+    "N",
+    "NE",
+    "E",
+    "SE",
+    "S",
+    "SW",
+    "W",
+    "NW"
+  ],
+  "num_trucks": 3,
+  "num_drones": 3,
+  "depot": {
+    "name": "depot",
+    "type": "depot",
+    "district": "Thanh Xuân - Hoàng Mai",
+    "lat": 20.977,
+    "lon": 105.845,
+    "distance_m": 0.0,
+    "address": ""
+  },
+  "random_seed": 42,
+  "source_center": "/Users/huetran/Desktop/crawdata/output/selected_500m.json",
+  "source_outer": "/Users/huetran/Desktop/crawdata/output/dataset_1000_customers_road_fixed.json",
+  "output_file": "/Users/huetran/Desktop/crawdata/output/1000point_v2.json",
+  "osrm_distance_output_dir": "/Users/huetran/Desktop/crawdata/output/1000point_v2_osrm",
+  "derived_from_master_dir": "/Users/huetran/Desktop/crawdata/output/master_v1_v2_unique_osrm",
+  "master_unique_point_count": 1121
+}

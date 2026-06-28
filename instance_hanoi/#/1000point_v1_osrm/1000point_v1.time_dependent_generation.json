@@ -1,0 +1,37 @@
+{
+  "dataset": "1000pint_v1",
+  "customers": 1000,
+  "nodes_including_depot": 1001,
+  "generated_files": [
+    "1000pint_v1.txt",
+    "1000pint_v1.distance_m.txt",
+    "1000pint_v1.vmax_ij.txt",
+    "1000pint_v1.theta_ijl.txt"
+  ],
+  "distance_source": "od_distance_m.csv",
+  "coordinate_rule_for_txt": "lat/lon projected to meters relative to depot using equirectangular approximation; current solver computes Euclidean distance from these coordinates unless modified to read distance_m file.",
+  "vmax_rule": "For each unordered edge {i,j}, sample Uniform(30,40) km/h and write symmetric directed vmax_ij in m/s.",
+  "theta_rule": "For each directed edge i->j and segment l=0..11, theta_ijl=round(Uniform(0.9,1.0)*base_L[l],2).",
+  "base_L": [
+    0.8,
+    0.5,
+    0.7,
+    0.8,
+    0.9,
+    0.7,
+    0.7,
+    0.9,
+    0.9,
+    0.7,
+    0.6,
+    0.5
+  ],
+  "random_seed": "20260628:1000pint_v1",
+  "trucks_count": 5,
+  "drones_count": 5,
+  "vmax_range_kmh": [
+    30.0,
+    40.0
+  ],
+  "random_seed_vmax": "20260628:vmax30_40:1000pint_v1"
+}

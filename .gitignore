@@ -9,3 +9,4 @@
 !result/Question4,14/To_refine_csv_2truck_1drone/*.csv
 *.bak*
 *.log
+instance_hanoi/*/*.theta_ijl.txt
