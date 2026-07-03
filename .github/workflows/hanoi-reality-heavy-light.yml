@@ -1,0 +1,539 @@
+name: Hanoi reality heavy/light drone comparison
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_jobs:
+        description: "Number of matrix jobs to create"
+        required: true
+        default: "250"
+      runs_per_instance:
+        description: "Number of repetitions for each instance"
+        required: true
+        default: "2"
+      max_parallel_jobs:
+        description: "Maximum GitHub jobs to run in parallel"
+        required: true
+        default: "50"
+      solver_time_limit_sec:
+        description: "Optional solver time limit in seconds; 0 means solver default"
+        required: true
+        default: "0"
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  prepare:
+    name: Build solver and prepare balanced jobs
+    runs-on: ubuntu-latest
+    outputs:
+      experiment_matrix: ${{ steps.matrix.outputs.matrix }}
+      total_tasks: ${{ steps.matrix.outputs.total_tasks }}
+      non_empty_jobs: ${{ steps.matrix.outputs.non_empty_jobs }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Compile Hanoi reality solver
+        run: |
+          g++ -O2 -std=c++20 tabubu_TimeDependent_hanoi_reality.cpp -o tabubu_hanoi_reality
+
+      - name: Generate balanced matrix
+        id: matrix
+        env:
+          TARGET_JOBS: ${{ inputs.target_jobs }}
+          RUNS_PER_INSTANCE: ${{ inputs.runs_per_instance }}
+        run: |
+          python3 - <<'PYEOF'
+          import glob
+          import json
+          import os
+          import re
+          from collections import Counter
+          from pathlib import Path
+
+          target_jobs = int(os.environ["TARGET_JOBS"])
+          runs_per_instance = int(os.environ["RUNS_PER_INSTANCE"])
+          if target_jobs <= 0:
+              raise SystemExit("target_jobs must be positive")
+          if target_jobs > 256:
+              raise SystemExit("target_jobs must not exceed GitHub Actions matrix limit of 256")
+          if runs_per_instance <= 0:
+              raise SystemExit("runs_per_instance must be positive")
+
+          instance_re = re.compile(r"^reality\.(\d+)\.(\d+)\.(\d+)\.txt$")
+          tasks = []
+          for profile in ("heavy", "light"):
+              root = Path("instance_hanoi/reality") / profile
+              for path in sorted(root.glob("reality.*.*.*.txt")):
+                  match = instance_re.match(path.name)
+                  if not match:
+                      continue
+                  customers = int(match.group(1))
+                  rectangle_miles = int(match.group(2))
+                  variant = int(match.group(3))
+                  base = path.name[:-4]
+                  for repetition in range(1, runs_per_instance + 1):
+                      tasks.append({
+                          "traffic_profile": profile,
+                          "instance": base,
+                          "input_file": str(path),
+                          "customers": customers,
+                          "rectangle_miles": rectangle_miles,
+                          "variant": variant,
+                          "repetition": repetition,
+                      })
+
+          if not tasks:
+              raise SystemExit("No Hanoi reality heavy/light tasks found")
+
+          # Higher-priority tasks are placed into larger batches first. This
+          # keeps 200-customer runs concentrated in jobs with more processes
+          # whenever total_tasks > target_jobs.
+          tasks.sort(key=lambda task: (
+              0 if task["customers"] == 200 else 1,
+              task["customers"],
+              task["rectangle_miles"],
+              task["variant"],
+              task["traffic_profile"],
+              task["repetition"],
+          ))
+
+          total_tasks = len(tasks)
+          matrix_jobs = min(target_jobs, total_tasks)
+          base_size, extra = divmod(total_tasks, matrix_jobs)
+          batch_sizes = [base_size + (1 if index < extra else 0) for index in range(matrix_jobs)]
+          batches = []
+          cursor = 0
+          for size in batch_sizes:
+              batches.append(tasks[cursor:cursor + size])
+              cursor += size
+          if cursor != total_tasks:
+              raise SystemExit(f"Internal batching error: assigned {cursor}, expected {total_tasks}")
+
+          matrix = [
+              {
+                  "batch_id": f"{index + 1:03d}",
+                  "task_count": len(batch),
+                  "tasks_json": json.dumps(batch, separators=(",", ":")),
+              }
+              for index, batch in enumerate(batches)
+          ]
+          distribution = Counter(len(batch) for batch in batches)
+          non_empty_jobs = sum(1 for batch in batches if batch)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"matrix={json.dumps(matrix, separators=(',', ':'))}\n")
+              output.write(f"total_tasks={total_tasks}\n")
+              output.write(f"non_empty_jobs={non_empty_jobs}\n")
+
+          print(f"Created {matrix_jobs} jobs for {total_tasks} solver processes")
+          print(f"Non-empty jobs: {non_empty_jobs}")
+          print(f"Batch size distribution: {dict(sorted(distribution.items()))}")
+          PYEOF
+
+      - name: Upload solver
+        uses: actions/upload-artifact@v4
+        with:
+          name: hanoi-reality-solver
+          path: tabubu_hanoi_reality
+          retention-days: 1
+
+  solve:
+    name: Hanoi reality batch ${{ matrix.batch_id }} (${{ matrix.task_count }} process)
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(inputs.max_parallel_jobs) }}
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.experiment_matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: hanoi-reality-solver
+
+      - name: Run assigned Hanoi reality processes
+        shell: bash
+        env:
+          BATCH_ID: ${{ matrix.batch_id }}
+          SOLVER_TIME_LIMIT_SEC: ${{ inputs.solver_time_limit_sec }}
+        run: |
+          chmod +x tabubu_hanoi_reality
+          mkdir -p hanoi_reality_results/raw hanoi_reality_results/logs hanoi_reality_results/runs
+          cat > batch_tasks.json <<'JSONEOF'
+          ${{ matrix.tasks_json }}
+          JSONEOF
+          python3 - <<'PYEOF'
+          import csv
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          solver = Path.cwd() / "tabubu_hanoi_reality"
+          tasks = json.loads(Path("batch_tasks.json").read_text(encoding="utf-8"))
+          raw_dir = Path("hanoi_reality_results/raw")
+          log_dir = Path("hanoi_reality_results/logs")
+          run_root = Path("hanoi_reality_results/runs")
+          time_limit = float(os.environ.get("SOLVER_TIME_LIMIT_SEC", "0") or "0")
+
+          fieldnames = [
+              "traffic_profile",
+              "instance",
+              "customers",
+              "rectangle_miles",
+              "variant",
+              "repetition",
+              "solver_exit_code",
+              "initial_cost",
+              "improved_cost",
+              "worst_cost",
+              "mean_cost",
+              "elapsed_seconds",
+              "feasibility",
+              "validated_makespan",
+              "deadline_violation",
+              "energy_violation",
+              "capacity_violation",
+              "drone_customers",
+              "drone_customer_ratio",
+              "truck_routes",
+              "drone_routes",
+              "solution_file",
+              "log_file",
+          ]
+
+          def value_after_colon(line):
+              return line.split(":", 1)[1].strip()
+
+          def parse_solution(path, customers):
+              text = path.read_text(encoding="utf-8", errors="replace")
+              parsed = {
+                  "initial_cost": "",
+                  "improved_cost": "",
+                  "worst_cost": "",
+                  "mean_cost": "",
+                  "elapsed_seconds": "",
+                  "feasibility": "",
+                  "validated_makespan": "",
+                  "deadline_violation": "",
+                  "energy_violation": "",
+                  "capacity_violation": "",
+                  "drone_customers": "",
+                  "drone_customer_ratio": "",
+                  "truck_routes": "",
+                  "drone_routes": "",
+              }
+              truck_routes = []
+              drone_routes = []
+              drone_nodes = set()
+              route_number_re = re.compile(r"\b\d+\b")
+
+              for line in text.splitlines():
+                  stripped = line.strip()
+                  if stripped.startswith("Initial solution cost:"):
+                      parsed["initial_cost"] = value_after_colon(stripped)
+                  elif stripped.startswith("Improved solution cost:"):
+                      parsed["improved_cost"] = value_after_colon(stripped)
+                  elif stripped.startswith("Worst solution cost:"):
+                      parsed["worst_cost"] = value_after_colon(stripped)
+                  elif stripped.startswith("Mean solution cost:"):
+                      parsed["mean_cost"] = value_after_colon(stripped)
+                  elif stripped.startswith("Mean elapsed time:"):
+                      parsed["elapsed_seconds"] = value_after_colon(stripped).replace(" seconds", "")
+                  elif stripped.startswith("Final solution feasibility:"):
+                      parsed["feasibility"] = value_after_colon(stripped)
+                  elif stripped.startswith("Truck "):
+                      truck_routes.append(stripped)
+                  elif stripped.startswith("Drone "):
+                      drone_routes.append(stripped)
+                      route_part = stripped.split("|", 1)[0].split(":", 1)[1]
+                      for token in route_number_re.findall(route_part):
+                          node = int(token)
+                          if node != 0:
+                              drone_nodes.add(node)
+                  elif stripped.startswith("Total validation:"):
+                      validation = stripped.split(":", 1)[1]
+                      for item in validation.split(","):
+                          if "=" not in item:
+                              continue
+                          key, value = item.strip().split("=", 1)
+                          if key == "Makespan":
+                              parsed["validated_makespan"] = value
+                          elif key == "Deadline violation":
+                              parsed["deadline_violation"] = value
+                          elif key == "Energy violation":
+                              parsed["energy_violation"] = value
+                          elif key == "Capacity violation":
+                              parsed["capacity_violation"] = value
+
+              parsed["drone_customers"] = str(len(drone_nodes))
+              parsed["drone_customer_ratio"] = f"{len(drone_nodes) / customers:.6f}" if customers else ""
+              parsed["truck_routes"] = " || ".join(truck_routes)
+              parsed["drone_routes"] = " || ".join(drone_routes)
+              return parsed
+
+          processes = []
+          for task in tasks:
+              run_id = f"{task['traffic_profile']}_{task['instance']}_run{task['repetition']:02d}"
+              work_dir = run_root / run_id
+              work_dir.mkdir(parents=True, exist_ok=True)
+              log_path = log_dir / f"{run_id}.log"
+              input_path = Path.cwd() / task["input_file"]
+              command = [str(solver), str(input_path), "--attempts=1"]
+              if time_limit > 0:
+                  command.append(f"--time-limit={time_limit:g}")
+              log_file = log_path.open("w", encoding="utf-8")
+              process = subprocess.Popen(command, cwd=work_dir, stdout=log_file, stderr=subprocess.STDOUT)
+              processes.append((task, run_id, work_dir, log_path, log_file, process))
+
+          rows = []
+          for task, run_id, work_dir, log_path, log_file, process in processes:
+              return_code = process.wait()
+              log_file.close()
+              solution_path = work_dir / "output_solution_best.txt"
+              row = {
+                  "traffic_profile": task["traffic_profile"],
+                  "instance": task["instance"],
+                  "customers": task["customers"],
+                  "rectangle_miles": task["rectangle_miles"],
+                  "variant": task["variant"],
+                  "repetition": task["repetition"],
+                  "solver_exit_code": return_code,
+                  "initial_cost": "",
+                  "improved_cost": "",
+                  "worst_cost": "",
+                  "mean_cost": "",
+                  "elapsed_seconds": "",
+                  "feasibility": "",
+                  "validated_makespan": "",
+                  "deadline_violation": "",
+                  "energy_violation": "",
+                  "capacity_violation": "",
+                  "drone_customers": "",
+                  "drone_customer_ratio": "",
+                  "truck_routes": "",
+                  "drone_routes": "",
+                  "solution_file": "",
+                  "log_file": str(log_path),
+              }
+              if solution_path.exists():
+                  target_solution = raw_dir / f"{run_id}_solution_best.txt"
+                  target_solution.write_text(solution_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+                  row.update(parse_solution(target_solution, int(task["customers"])))
+                  row["solution_file"] = str(target_solution)
+              rows.append(row)
+
+          rows.sort(key=lambda row: (
+              row["customers"],
+              row["rectangle_miles"],
+              row["variant"],
+              row["traffic_profile"],
+              row["repetition"],
+          ))
+          batch_id = os.environ["BATCH_ID"]
+          out_path = Path("hanoi_reality_results") / f"batch_{batch_id}_results.csv"
+          with out_path.open("w", newline="", encoding="utf-8") as csv_file:
+              writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+              writer.writeheader()
+              writer.writerows(rows)
+
+          print(f"Completed {len(rows)} processes in this batch")
+          PYEOF
+
+      - name: Upload batch results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hanoi-reality-batch-${{ matrix.batch_id }}
+          path: |
+            hanoi_reality_results/batch_*_results.csv
+            hanoi_reality_results/raw/*_solution_best.txt
+            hanoi_reality_results/logs/*.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  aggregate:
+    name: Aggregate heavy/light drone comparison
+    needs:
+      - prepare
+      - solve
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download all batch artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: hanoi-reality-batch-*
+          path: collected_hanoi_reality
+          merge-multiple: true
+
+      - name: Build detail and comparison summaries
+        env:
+          EXPECTED_TASKS: ${{ needs.prepare.outputs.total_tasks }}
+        run: |
+          python3 - <<'PYEOF'
+          import csv
+          import math
+          import os
+          from collections import defaultdict
+          from pathlib import Path
+
+          expected_tasks = int(os.environ["EXPECTED_TASKS"])
+          input_files = sorted(Path("collected_hanoi_reality").glob("batch_*_results.csv"))
+          rows = []
+          for path in input_files:
+              with path.open(newline="", encoding="utf-8") as csv_file:
+                  rows.extend(csv.DictReader(csv_file))
+
+          rows = [row for row in rows if row.get("instance")]
+          rows.sort(key=lambda row: (
+              int(row["customers"]),
+              int(row["rectangle_miles"]),
+              int(row["variant"]),
+              row["traffic_profile"],
+              int(row["repetition"]),
+          ))
+          if len(rows) != expected_tasks:
+              raise SystemExit(f"Expected {expected_tasks} results, found {len(rows)}")
+
+          numeric_fields = [
+              "initial_cost",
+              "improved_cost",
+              "validated_makespan",
+              "elapsed_seconds",
+              "drone_customers",
+              "drone_customer_ratio",
+          ]
+
+          def as_float(value):
+              try:
+                  if value == "":
+                      return math.nan
+                  return float(value)
+              except ValueError:
+                  return math.nan
+
+          def mean(values):
+              clean = [value for value in values if not math.isnan(value)]
+              return sum(clean) / len(clean) if clean else math.nan
+
+          detail_path = Path("hanoi_reality_heavy_light_detail.csv")
+          detail_fields = list(rows[0].keys()) if rows else []
+          with detail_path.open("w", newline="", encoding="utf-8") as csv_file:
+              writer = csv.DictWriter(csv_file, fieldnames=detail_fields)
+              writer.writeheader()
+              writer.writerows(rows)
+
+          grouped = defaultdict(list)
+          for row in rows:
+              grouped[(
+                  row["traffic_profile"],
+                  int(row["customers"]),
+                  int(row["rectangle_miles"]),
+              )].append(row)
+
+          summary_fields = [
+              "traffic_profile",
+              "customers",
+              "rectangle_miles",
+              "runs",
+              "feasible_runs",
+              "avg_initial_cost",
+              "avg_objective",
+              "best_objective",
+              "avg_validated_makespan",
+              "avg_elapsed_seconds",
+              "avg_drone_customers",
+              "avg_drone_customer_ratio",
+          ]
+          summary_rows = []
+          for (profile, customers, rectangle), group in sorted(grouped.items(), key=lambda item: item[0]):
+              objectives = [as_float(row["improved_cost"]) for row in group]
+              summary_rows.append({
+                  "traffic_profile": profile,
+                  "customers": customers,
+                  "rectangle_miles": rectangle,
+                  "runs": len(group),
+                  "feasible_runs": sum(1 for row in group if row["feasibility"] == "FEASIBLE"),
+                  "avg_initial_cost": f"{mean(as_float(row['initial_cost']) for row in group):.6f}",
+                  "avg_objective": f"{mean(objectives):.6f}",
+                  "best_objective": f"{min(value for value in objectives if not math.isnan(value)):.6f}",
+                  "avg_validated_makespan": f"{mean(as_float(row['validated_makespan']) for row in group):.6f}",
+                  "avg_elapsed_seconds": f"{mean(as_float(row['elapsed_seconds']) for row in group):.6f}",
+                  "avg_drone_customers": f"{mean(as_float(row['drone_customers']) for row in group):.6f}",
+                  "avg_drone_customer_ratio": f"{mean(as_float(row['drone_customer_ratio']) for row in group):.6f}",
+              })
+
+          summary_path = Path("hanoi_reality_heavy_light_summary.csv")
+          with summary_path.open("w", newline="", encoding="utf-8") as csv_file:
+              writer = csv.DictWriter(csv_file, fieldnames=summary_fields)
+              writer.writeheader()
+              writer.writerows(summary_rows)
+
+          comparison_fields = [
+              "customers",
+              "rectangle_miles",
+              "light_avg_objective",
+              "heavy_avg_objective",
+              "heavy_minus_light_objective",
+              "light_avg_drone_customer_ratio",
+              "heavy_avg_drone_customer_ratio",
+              "heavy_minus_light_drone_ratio",
+          ]
+          by_key = {(row["traffic_profile"], int(row["customers"]), int(row["rectangle_miles"])): row for row in summary_rows}
+          comparison_rows = []
+          for customers in sorted({int(row["customers"]) for row in summary_rows}):
+              for rectangle in sorted({int(row["rectangle_miles"]) for row in summary_rows if int(row["customers"]) == customers}):
+                  light = by_key.get(("light", customers, rectangle))
+                  heavy = by_key.get(("heavy", customers, rectangle))
+                  if not light or not heavy:
+                      continue
+                  light_obj = float(light["avg_objective"])
+                  heavy_obj = float(heavy["avg_objective"])
+                  light_ratio = float(light["avg_drone_customer_ratio"])
+                  heavy_ratio = float(heavy["avg_drone_customer_ratio"])
+                  comparison_rows.append({
+                      "customers": customers,
+                      "rectangle_miles": rectangle,
+                      "light_avg_objective": f"{light_obj:.6f}",
+                      "heavy_avg_objective": f"{heavy_obj:.6f}",
+                      "heavy_minus_light_objective": f"{heavy_obj - light_obj:.6f}",
+                      "light_avg_drone_customer_ratio": f"{light_ratio:.6f}",
+                      "heavy_avg_drone_customer_ratio": f"{heavy_ratio:.6f}",
+                      "heavy_minus_light_drone_ratio": f"{heavy_ratio - light_ratio:.6f}",
+                  })
+
+          comparison_path = Path("hanoi_reality_heavy_vs_light_comparison.csv")
+          with comparison_path.open("w", newline="", encoding="utf-8") as csv_file:
+              writer = csv.DictWriter(csv_file, fieldnames=comparison_fields)
+              writer.writeheader()
+              writer.writerows(comparison_rows)
+
+          print(f"Saved {detail_path}")
+          print(f"Saved {summary_path}")
+          print(f"Saved {comparison_path}")
+          PYEOF
+
+      - name: Upload consolidated comparison results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hanoi-reality-heavy-light-comparison-results
+          path: |
+            hanoi_reality_heavy_light_detail.csv
+            hanoi_reality_heavy_light_summary.csv
+            hanoi_reality_heavy_vs_light_comparison.csv
+          if-no-files-found: warn
+          retention-days: 30
