@@ -1,0 +1,401 @@
+name: Hanoi reality light 30new/40new
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs_per_instance:
+        description: "Number of repetitions for each instance"
+        required: true
+        default: "2"
+      max_parallel_jobs:
+        description: "Maximum GitHub jobs to run in parallel"
+        required: true
+        default: "32"
+      solver_time_limit_sec:
+        description: "Optional solver time limit in seconds; 0 means solver default"
+        required: true
+        default: "0"
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  prepare:
+    name: Build solver and prepare light-new matrix
+    runs-on: ubuntu-latest
+    outputs:
+      experiment_matrix: ${{ steps.matrix.outputs.matrix }}
+      total_tasks: ${{ steps.matrix.outputs.total_tasks }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Compile Hanoi reality solver
+        run: |
+          g++ -O2 -std=c++20 tabubu_TimeDependent_hanoi_reality.cpp -o tabubu_hanoi_reality
+
+      - name: Generate light 30new/40new matrix
+        id: matrix
+        env:
+          RUNS_PER_INSTANCE: ${{ inputs.runs_per_instance }}
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          runs_per_instance = int(os.environ["RUNS_PER_INSTANCE"])
+          if runs_per_instance <= 0:
+              raise SystemExit("runs_per_instance must be positive")
+
+          root = Path("instance_hanoi/reality/light")
+          instance_re = re.compile(r"^reality\.(\d+)\.(30new|40new)\.(\d+)\.txt$")
+          tasks = []
+          for path in sorted(root.glob("reality.*.*new.*.txt")):
+              match = instance_re.match(path.name)
+              if not match:
+                  continue
+              customers = int(match.group(1))
+              rectangle_label = match.group(2)
+              variant = int(match.group(3))
+              base = path.name[:-4]
+              for repetition in range(1, runs_per_instance + 1):
+                  tasks.append({
+                      "task_id": f"{base}_run{repetition:02d}",
+                      "traffic_profile": "light",
+                      "instance": base,
+                      "input_file": str(path),
+                      "customers": customers,
+                      "rectangle_label": rectangle_label,
+                      "variant": variant,
+                      "repetition": repetition,
+                  })
+
+          tasks.sort(key=lambda task: (
+              task["customers"],
+              task["rectangle_label"],
+              task["variant"],
+              task["repetition"],
+          ))
+          if not tasks:
+              raise SystemExit("No light 30new/40new instances found")
+
+          matrix = [{"batch_id": f"{index + 1:03d}", **task} for index, task in enumerate(tasks)]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"matrix={json.dumps(matrix, separators=(',', ':'))}\n")
+              output.write(f"total_tasks={len(tasks)}\n")
+
+          print(f"Created {len(tasks)} jobs for light 30new/40new")
+          PYEOF
+
+      - name: Upload solver
+        uses: actions/upload-artifact@v4
+        with:
+          name: hanoi-reality-light-new-solver
+          path: tabubu_hanoi_reality
+          retention-days: 1
+
+  solve:
+    name: ${{ matrix.instance }} run ${{ matrix.repetition }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(inputs.max_parallel_jobs) }}
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.experiment_matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: hanoi-reality-light-new-solver
+
+      - name: Run one light-new instance
+        shell: bash
+        env:
+          SOLVER_TIME_LIMIT_SEC: ${{ inputs.solver_time_limit_sec }}
+          INSTANCE: ${{ matrix.instance }}
+          INPUT_FILE: ${{ matrix.input_file }}
+          CUSTOMERS: ${{ matrix.customers }}
+          RECTANGLE_LABEL: ${{ matrix.rectangle_label }}
+          VARIANT: ${{ matrix.variant }}
+          REPETITION: ${{ matrix.repetition }}
+          TASK_ID: ${{ matrix.task_id }}
+        run: |
+          chmod +x tabubu_hanoi_reality
+          mkdir -p hanoi_light_new_results/raw hanoi_light_new_results/logs hanoi_light_new_results/runs
+          python3 - <<'PYEOF'
+          import csv
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          solver = Path.cwd() / "tabubu_hanoi_reality"
+          task_id = os.environ["TASK_ID"]
+          input_path = Path.cwd() / os.environ["INPUT_FILE"]
+          customers = int(os.environ["CUSTOMERS"])
+          time_limit = float(os.environ.get("SOLVER_TIME_LIMIT_SEC", "0") or "0")
+
+          run_dir = Path("hanoi_light_new_results/runs") / task_id
+          raw_dir = Path("hanoi_light_new_results/raw")
+          log_dir = Path("hanoi_light_new_results/logs")
+          run_dir.mkdir(parents=True, exist_ok=True)
+          raw_dir.mkdir(parents=True, exist_ok=True)
+          log_dir.mkdir(parents=True, exist_ok=True)
+
+          command = [str(solver), str(input_path), "--attempts=1"]
+          if time_limit > 0:
+              command.append(f"--time-limit={time_limit:g}")
+
+          log_path = log_dir / f"{task_id}.log"
+          with log_path.open("w", encoding="utf-8") as log_file:
+              return_code = subprocess.call(command, cwd=run_dir, stdout=log_file, stderr=subprocess.STDOUT)
+
+          fieldnames = [
+              "traffic_profile",
+              "instance",
+              "customers",
+              "rectangle_label",
+              "variant",
+              "repetition",
+              "solver_exit_code",
+              "initial_cost",
+              "improved_cost",
+              "worst_cost",
+              "mean_cost",
+              "elapsed_seconds",
+              "feasibility",
+              "validated_makespan",
+              "deadline_violation",
+              "energy_violation",
+              "capacity_violation",
+              "drone_customers",
+              "drone_customer_ratio",
+              "truck_routes",
+              "drone_routes",
+              "solution_file",
+              "log_file",
+          ]
+
+          row = {
+              "traffic_profile": "light",
+              "instance": os.environ["INSTANCE"],
+              "customers": customers,
+              "rectangle_label": os.environ["RECTANGLE_LABEL"],
+              "variant": os.environ["VARIANT"],
+              "repetition": os.environ["REPETITION"],
+              "solver_exit_code": return_code,
+              "initial_cost": "",
+              "improved_cost": "",
+              "worst_cost": "",
+              "mean_cost": "",
+              "elapsed_seconds": "",
+              "feasibility": "",
+              "validated_makespan": "",
+              "deadline_violation": "",
+              "energy_violation": "",
+              "capacity_violation": "",
+              "drone_customers": "",
+              "drone_customer_ratio": "",
+              "truck_routes": "",
+              "drone_routes": "",
+              "solution_file": "",
+              "log_file": str(log_path),
+          }
+
+          def value_after_colon(line):
+              return line.split(":", 1)[1].strip()
+
+          solution_path = run_dir / "output_solution_best.txt"
+          if solution_path.exists():
+              target_solution = raw_dir / f"{task_id}_solution_best.txt"
+              target_solution.write_text(solution_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+              text = target_solution.read_text(encoding="utf-8", errors="replace")
+              truck_routes = []
+              drone_routes = []
+              drone_nodes = set()
+              route_number_re = re.compile(r"\b\d+\b")
+              for line in text.splitlines():
+                  stripped = line.strip()
+                  if stripped.startswith("Initial solution cost:"):
+                      row["initial_cost"] = value_after_colon(stripped)
+                  elif stripped.startswith("Improved solution cost:"):
+                      row["improved_cost"] = value_after_colon(stripped)
+                  elif stripped.startswith("Worst solution cost:"):
+                      row["worst_cost"] = value_after_colon(stripped)
+                  elif stripped.startswith("Mean solution cost:"):
+                      row["mean_cost"] = value_after_colon(stripped)
+                  elif stripped.startswith("Mean elapsed time:"):
+                      row["elapsed_seconds"] = value_after_colon(stripped).replace(" seconds", "")
+                  elif stripped.startswith("Final solution feasibility:"):
+                      row["feasibility"] = value_after_colon(stripped)
+                  elif stripped.startswith("Truck "):
+                      truck_routes.append(stripped)
+                  elif stripped.startswith("Drone "):
+                      drone_routes.append(stripped)
+                      route_part = stripped.split("|", 1)[0].split(":", 1)[1]
+                      for token in route_number_re.findall(route_part):
+                          node = int(token)
+                          if node != 0:
+                              drone_nodes.add(node)
+                  elif stripped.startswith("Total validation:"):
+                      validation = stripped.split(":", 1)[1]
+                      for item in validation.split(","):
+                          if "=" not in item:
+                              continue
+                          key, value = item.strip().split("=", 1)
+                          if key == "Makespan":
+                              row["validated_makespan"] = value
+                          elif key == "Deadline violation":
+                              row["deadline_violation"] = value
+                          elif key == "Energy violation":
+                              row["energy_violation"] = value
+                          elif key == "Capacity violation":
+                              row["capacity_violation"] = value
+              row["drone_customers"] = str(len(drone_nodes))
+              row["drone_customer_ratio"] = f"{len(drone_nodes) / customers:.6f}" if customers else ""
+              row["truck_routes"] = " || ".join(truck_routes)
+              row["drone_routes"] = " || ".join(drone_routes)
+              row["solution_file"] = str(target_solution)
+
+          out_path = Path("hanoi_light_new_results") / f"{task_id}_summary.csv"
+          with out_path.open("w", newline="", encoding="utf-8") as csv_file:
+              writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+              writer.writeheader()
+              writer.writerow(row)
+          PYEOF
+
+      - name: Upload run result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hanoi-light-new-${{ matrix.batch_id }}
+          path: |
+            hanoi_light_new_results/*_summary.csv
+            hanoi_light_new_results/raw/*_solution_best.txt
+            hanoi_light_new_results/logs/*.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  aggregate:
+    name: Aggregate light 30new/40new results
+    needs:
+      - prepare
+      - solve
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download all run artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: hanoi-light-new-*
+          path: collected_hanoi_light_new
+          merge-multiple: true
+
+      - name: Build detail and summary CSV
+        env:
+          EXPECTED_TASKS: ${{ needs.prepare.outputs.total_tasks }}
+        run: |
+          python3 - <<'PYEOF'
+          import csv
+          import math
+          import os
+          from collections import defaultdict
+          from pathlib import Path
+
+          expected_tasks = int(os.environ["EXPECTED_TASKS"])
+          rows = []
+          for path in sorted(Path("collected_hanoi_light_new").glob("*_summary.csv")):
+              with path.open(newline="", encoding="utf-8") as csv_file:
+                  rows.extend(csv.DictReader(csv_file))
+
+          rows = [row for row in rows if row.get("instance")]
+          rows.sort(key=lambda row: (
+              int(row["customers"]),
+              row["rectangle_label"],
+              int(row["variant"]),
+              int(row["repetition"]),
+          ))
+          if len(rows) != expected_tasks:
+              raise SystemExit(f"Expected {expected_tasks} results, found {len(rows)}")
+
+          def as_float(value):
+              try:
+                  return float(value) if value != "" else math.nan
+              except ValueError:
+                  return math.nan
+
+          def mean(values):
+              clean = [value for value in values if not math.isnan(value)]
+              return sum(clean) / len(clean) if clean else math.nan
+
+          detail_path = Path("hanoi_reality_light_new_detail.csv")
+          with detail_path.open("w", newline="", encoding="utf-8") as csv_file:
+              writer = csv.DictWriter(csv_file, fieldnames=list(rows[0].keys()))
+              writer.writeheader()
+              writer.writerows(rows)
+
+          grouped = defaultdict(list)
+          for row in rows:
+              grouped[(int(row["customers"]), row["rectangle_label"])].append(row)
+
+          summary_fields = [
+              "customers",
+              "rectangle_label",
+              "runs",
+              "feasible_runs",
+              "avg_initial_cost",
+              "avg_objective",
+              "best_objective",
+              "avg_validated_makespan",
+              "avg_elapsed_seconds",
+              "avg_drone_customers",
+              "avg_drone_customer_ratio",
+          ]
+          summary_rows = []
+          for (customers, rectangle_label), group in sorted(grouped.items()):
+              objectives = [as_float(row["improved_cost"]) for row in group]
+              clean_objectives = [value for value in objectives if not math.isnan(value)]
+              summary_rows.append({
+                  "customers": customers,
+                  "rectangle_label": rectangle_label,
+                  "runs": len(group),
+                  "feasible_runs": sum(1 for row in group if row["feasibility"] == "FEASIBLE"),
+                  "avg_initial_cost": f"{mean(as_float(row['initial_cost']) for row in group):.6f}",
+                  "avg_objective": f"{mean(objectives):.6f}",
+                  "best_objective": f"{min(clean_objectives):.6f}" if clean_objectives else "",
+                  "avg_validated_makespan": f"{mean(as_float(row['validated_makespan']) for row in group):.6f}",
+                  "avg_elapsed_seconds": f"{mean(as_float(row['elapsed_seconds']) for row in group):.6f}",
+                  "avg_drone_customers": f"{mean(as_float(row['drone_customers']) for row in group):.6f}",
+                  "avg_drone_customer_ratio": f"{mean(as_float(row['drone_customer_ratio']) for row in group):.6f}",
+              })
+
+          summary_path = Path("hanoi_reality_light_new_summary.csv")
+          with summary_path.open("w", newline="", encoding="utf-8") as csv_file:
+              writer = csv.DictWriter(csv_file, fieldnames=summary_fields)
+              writer.writeheader()
+              writer.writerows(summary_rows)
+
+          print(f"Saved {detail_path}")
+          print(f"Saved {summary_path}")
+          PYEOF
+
+      - name: Upload consolidated light-new results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hanoi-reality-light-new-results
+          path: |
+            hanoi_reality_light_new_detail.csv
+            hanoi_reality_light_new_summary.csv
+          if-no-files-found: warn
+          retention-days: 30
